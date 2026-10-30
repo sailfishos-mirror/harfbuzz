@@ -85,6 +85,11 @@ public:
   hb_decycler_t layers_decycler;
   int depth_left = HB_MAX_NESTING_LEVEL;
   int edge_count = HB_MAX_GRAPH_EDGE_COUNT;
+  /* The backend's live work budget, or a local one if it has none.
+   * Traversal work is charged here so that the per-walk edge count
+   * cannot multiply across the glyphs of one session. */
+  int64_t local_budget = HB_BUDGET_GLYPH;
+  int64_t *budget;
 
   hb_paint_context_t (const void *base_,
 		      hb_paint_funcs_t *funcs_,
@@ -104,8 +109,12 @@ public:
 #endif
     ),
     foreground (foreground_),
-    instancer (instancer_)
+    instancer (instancer_),
+    budget (funcs->get_budget_remaining_ptr (data))
   {
+    if (!budget)
+      budget = &local_budget;
+
     if (font->is_synthetic)
     {
       font = hb_font_create_sub_font (font);
@@ -3165,6 +3174,7 @@ struct COLR
 	  {
 	    auto *bounded_funcs = hb_paint_bounded_get_funcs ();
 	    scratch.paint_bounded.clear ();
+	    scratch.paint_bounded.budget_remaining = c.budget;
 
 	    paint_glyph (font, glyph,
 			 bounded_funcs, &scratch.paint_bounded,
@@ -3204,6 +3214,13 @@ struct COLR
       for (const auto &r : (this+layersZ).as_array (numLayers)
 			   .sub_array (record->firstLayerIdx, record->numLayers))
       {
+	/* Each layer is one edge of a flat graph.  Bound and charge it
+	 * like the COLRv1 traversal does; the backend charges nothing
+	 * for a layer whose glyph has no outline. */
+	if (unlikely (c.edge_count <= 0 ||
+		      !hb_budget_spend (*c.budget, HB_BUDGET_32))) break;
+	c.edge_count--;
+
         hb_bool_t is_foreground;
         hb_color_t color = c.get_color (r.colorIdx, 1., &is_foreground);
         c.funcs->fill_glyph (c.data, r.glyphId, c.font, is_foreground, color);
@@ -3241,7 +3258,9 @@ struct COLR_accelerator_t : COLR::accelerator_t {
 void
 hb_paint_context_t::recurse (const Paint &paint)
 {
-  if (unlikely (depth_left <= 0 || edge_count <= 0)) return;
+  /* The edge count bounds one walk; the charge bounds a session of many. */
+  if (unlikely (depth_left <= 0 || edge_count <= 0 ||
+		!hb_budget_spend (*budget, HB_BUDGET_16))) return;
   depth_left--;
   edge_count--;
   paint.dispatch (this);
@@ -3260,6 +3279,7 @@ void PaintGlyph<Types>::paint_glyph (hb_paint_context_t *c) const
       (this+paint).get_solid_color (c, &is_foreground, &color))
   {
     c->edge_count--;
+    if (unlikely (!hb_budget_spend (*c->budget, HB_BUDGET_16))) return;
     c->funcs->push_inverse_font_transform (c->data, c->font);
     c->funcs->fill_glyph (c->data, gid, c->font, is_foreground, color);
     c->funcs->pop_transform (c->data);

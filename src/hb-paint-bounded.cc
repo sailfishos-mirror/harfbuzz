@@ -164,6 +164,16 @@ hb_paint_bounded_paint_sweep_gradient (hb_paint_funcs_t *funcs HB_UNUSED,
   c->paint ();
 }
 
+static int64_t *
+hb_paint_bounded_get_budget_remaining (hb_paint_funcs_t *funcs HB_UNUSED,
+				       void *paint_data,
+				       void *user_data HB_UNUSED)
+{
+  hb_paint_bounded_context_t *c = (hb_paint_bounded_context_t *) paint_data;
+
+  return c->budget_remaining;
+}
+
 static inline void free_static_paint_bounded_funcs ();
 
 static struct hb_paint_bounded_funcs_lazy_loader_t : hb_paint_funcs_lazy_loader_t<hb_paint_bounded_funcs_lazy_loader_t>
@@ -182,6 +192,7 @@ static struct hb_paint_bounded_funcs_lazy_loader_t : hb_paint_funcs_lazy_loader_
     hb_paint_funcs_set_linear_gradient_func (funcs, hb_paint_bounded_paint_linear_gradient, nullptr, nullptr);
     hb_paint_funcs_set_radial_gradient_func (funcs, hb_paint_bounded_paint_radial_gradient, nullptr, nullptr);
     hb_paint_funcs_set_sweep_gradient_func (funcs, hb_paint_bounded_paint_sweep_gradient, nullptr, nullptr);
+    hb_paint_funcs_set_get_budget_remaining_func (funcs, hb_paint_bounded_get_budget_remaining, nullptr, nullptr);
 
     hb_paint_funcs_make_immutable (funcs);
 

@@ -1149,6 +1149,124 @@ test_hb_paint_budget (void)
   hb_paint_funcs_destroy (funcs);
 }
 
+static unsigned layers_painted;
+
+static void
+count_layer (hb_paint_funcs_t *funcs HB_UNUSED,
+	     void *paint_data HB_UNUSED,
+	     hb_bool_t is_foreground HB_UNUSED,
+	     hb_color_t color HB_UNUSED,
+	     void *user_data HB_UNUSED)
+{
+  layers_painted++;
+}
+
+static void
+test_hb_paint_layers_budget (void)
+{
+  /* A COLRv0 glyph (0) and a COLRv1 glyph (1) of 100 layers each, all
+   * filling a glyph without outline.  Walking them must consume budget. */
+  char colr_data[34 + 6 + 100 * 4 + 16 + 404 + 11] = {0};
+  colr_data[1] = 1; /* version */
+  colr_data[3] = 1; /* numBaseGlyphs */
+  colr_data[7] = 34; /* baseGlyphs */
+  colr_data[11] = 40; /* layers */
+  colr_data[13] = 100; /* numLayers */
+  colr_data[16] = 0x01; colr_data[17] = (char) 0xB8; /* baseGlyphList */
+  colr_data[20] = 0x01; colr_data[21] = (char) 0xC8; /* layerList */
+  colr_data[34 + 5] = 100; /* BaseGlyphRecord: glyph 0 */
+  for (unsigned i = 0; i < 100; i++)
+    colr_data[40 + i * 4 + 1] = 2; /* LayerRecord */
+  colr_data[440 + 3] = 1; /* BaseGlyphList: glyph 1 */
+  colr_data[440 + 5] = 1;
+  colr_data[440 + 9] = 10;
+  colr_data[440 + 10] = 1; /* PaintColrLayers */
+  colr_data[440 + 11] = 100;
+  colr_data[456 + 3] = 100; /* LayerList */
+  for (unsigned i = 0; i < 100; i++)
+  {
+    colr_data[456 + 4 + i * 4 + 2] = 0x01;
+    colr_data[456 + 4 + i * 4 + 3] = (char) 0x94;
+  }
+  colr_data[860] = 10; /* PaintGlyph */
+  colr_data[860 + 3] = 6;
+  colr_data[860 + 5] = 2;
+  colr_data[866] = 2; /* PaintSolid */
+  colr_data[866 + 3] = 0x40;
+
+  hb_face_t *face = hb_face_builder_create ();
+  HB_FACE_ADD_TABLE (face, "COLR", colr_data);
+  hb_face_set_glyph_count (face, 3);
+  hb_font_t *font = hb_font_create (face);
+
+  paint_budget_data_t data = {HB_BUDGET_DEFAULT, 0};
+  hb_paint_funcs_t *funcs = hb_paint_funcs_create ();
+  hb_paint_funcs_set_color_func (funcs, count_layer, NULL, NULL);
+  hb_paint_funcs_set_set_budget_func (funcs, paint_set_budget, NULL, NULL);
+  hb_paint_funcs_set_get_budget_remaining_func (funcs, paint_get_budget_remaining, NULL, NULL);
+
+  for (hb_codepoint_t glyph = 0; glyph < 2; glyph++)
+  {
+    layers_painted = 0;
+    g_assert_true (hb_paint_set_budget (funcs, &data, 100000));
+    hb_font_paint_glyph (font, glyph, funcs, &data, 0, HB_COLOR (0, 0, 0, 255));
+    g_assert_cmpuint (layers_painted, ==, 100);
+    g_assert_cmpint (data.live, <=, 100000 - 100);
+    g_assert_cmpint (data.live, >=, 0);
+
+    layers_painted = 0;
+    g_assert_true (hb_paint_set_budget (funcs, &data, 100));
+    hb_font_paint_glyph (font, glyph, funcs, &data, 0, HB_COLOR (0, 0, 0, 255));
+    g_assert_cmpuint (layers_painted, <, 100);
+    g_assert_cmpint (data.live, <, 0);
+  }
+
+  hb_paint_funcs_destroy (funcs);
+  hb_font_destroy (font);
+  hb_face_destroy (face);
+}
+
+static void
+test_hb_paint_colrv0_layers_bounded (void)
+{
+  /* A COLRv0 glyph (0) with the maximum 65535 layers, all filling a
+   * glyph without outline.  The walk must stop well before the end,
+   * like the COLRv1 graph traversal does. */
+  unsigned num_layers = 65535;
+  unsigned len = 20 + num_layers * 4;
+  char *colr_data = (char *) calloc (len, 1);
+  colr_data[3] = 1; /* numBaseGlyphs */
+  colr_data[7] = 14; /* baseGlyphs */
+  colr_data[11] = 20; /* layers */
+  colr_data[12] = (char) 0xFF; colr_data[13] = (char) 0xFF; /* numLayers */
+  colr_data[14 + 4] = (char) 0xFF; colr_data[14 + 5] = (char) 0xFF; /* BaseGlyphRecord: glyph 0 */
+  for (unsigned i = 0; i < num_layers; i++)
+  {
+    colr_data[20 + i * 4 + 1] = 1; /* LayerRecord: glyph 1, foreground */
+    colr_data[20 + i * 4 + 2] = (char) 0xFF;
+    colr_data[20 + i * 4 + 3] = (char) 0xFF;
+  }
+
+  hb_face_t *face = hb_face_builder_create ();
+  hb_blob_t *blob = hb_blob_create (colr_data, len, HB_MEMORY_MODE_WRITABLE, colr_data, free);
+  hb_face_builder_add_table (face, HB_TAG ('C','O','L','R'), blob);
+  hb_blob_destroy (blob);
+  hb_face_set_glyph_count (face, 2);
+  hb_font_t *font = hb_font_create (face);
+
+  hb_paint_funcs_t *funcs = hb_paint_funcs_create ();
+  hb_paint_funcs_set_color_func (funcs, count_layer, NULL, NULL);
+
+  layers_painted = 0;
+  g_assert_true (hb_font_paint_glyph_or_fail (font, 0, funcs, NULL, 0, HB_COLOR (0, 0, 0, 255)));
+  g_assert_cmpuint (layers_painted, >, 0);
+  g_assert_cmpuint (layers_painted, <, num_layers);
+
+  hb_paint_funcs_destroy (funcs);
+  hb_font_destroy (font);
+  hb_face_destroy (face);
+}
+
 
 int
 main (int argc, char **argv)
@@ -1164,6 +1282,8 @@ main (int argc, char **argv)
   hb_test_add (test_fill_glyph_nil_decomposes);
   hb_test_add (test_color_glyph_user_data);
   hb_test_add (test_hb_paint_budget);
+  hb_test_add (test_hb_paint_layers_budget);
+  hb_test_add (test_hb_paint_colrv0_layers_bounded);
 
   for (unsigned int i = 0; i < G_N_ELEMENTS (paint_tests); i++)
   {

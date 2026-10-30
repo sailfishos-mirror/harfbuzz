@@ -40,6 +40,7 @@ struct hb_paint_bounded_context_t
     clips = 0;
     bounded = true;
     groups.clear ();
+    budget_remaining = nullptr;
   }
 
   hb_paint_bounded_context_t ()
@@ -103,6 +104,9 @@ struct hb_paint_bounded_context_t
     if (!clips)
       bounded = false;
   }
+
+  /* The live work budget of the session asking, if any. */
+  int64_t *budget_remaining = nullptr;
 
   protected:
   bool bounded; // true if current drawing bounded
