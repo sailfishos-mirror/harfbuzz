@@ -521,6 +521,16 @@ struct hb_font_t
     return ret;
   }
 
+  HB_INTERNAL hb_bool_t get_glyph_v_origins_with_budget (unsigned int count,
+							 const hb_codepoint_t *first_glyph,
+							 unsigned int glyph_stride,
+							 hb_position_t *first_x,
+							 unsigned int x_stride,
+							 hb_position_t *first_y,
+							 unsigned int y_stride,
+							 int64_t *budget);
+
+  /* See get_glyph_extents() for budget. */
   hb_bool_t get_glyph_v_origins (unsigned int count,
 				 const hb_codepoint_t *first_glyph,
 				 unsigned int glyph_stride,
@@ -528,10 +538,16 @@ struct hb_font_t
 				 unsigned int x_stride,
 				 hb_position_t *first_y,
 				 unsigned int y_stride,
-				 bool synthetic = true)
+				 bool synthetic = true,
+				 int64_t *budget = nullptr)
 
   {
-    bool ret = klass->get.f.glyph_v_origins (this, user_data,
+    bool ret = budget ?
+	       get_glyph_v_origins_with_budget (count,
+						first_glyph, glyph_stride,
+						first_x, x_stride, first_y, y_stride,
+						budget) :
+	       klass->get.f.glyph_v_origins (this, user_data,
 					     count,
 					     first_glyph, glyph_stride,
 					     first_x, x_stride, first_y, y_stride,
@@ -583,26 +599,40 @@ struct hb_font_t
 #endif
   }
 
+  HB_INTERNAL hb_bool_t get_glyph_extents_with_budget (hb_codepoint_t glyph,
+						       hb_glyph_extents_t *extents,
+						       int64_t *budget);
+
+  hb_bool_t get_glyph_extents_unsynthesized (hb_codepoint_t glyph,
+					     hb_glyph_extents_t *extents,
+					     int64_t *budget)
+  {
+    if (budget)
+      return get_glyph_extents_with_budget (glyph, extents, budget);
+    return klass->get.f.glyph_extents (this, user_data,
+				       glyph,
+				       extents,
+				       !klass->user_data ? nullptr : klass->user_data->glyph_extents);
+  }
+
+  /* A caller that fetches the extents of many glyphs in one session passes
+   * its live work budget, which the outlines loaded are then charged to. */
   hb_bool_t get_glyph_extents (hb_codepoint_t glyph,
 			       hb_glyph_extents_t *extents,
-			       bool synthetic = true)
+			       bool synthetic = true,
+			       int64_t *budget = nullptr)
   {
     hb_memset (extents, 0, sizeof (*extents));
+
+    if (unlikely (budget && *budget < 0))
+      return false;
 
     /* This is rather messy, but necessary. */
 
     if (!synthetic)
-    {
-      return klass->get.f.glyph_extents (this, user_data,
-					 glyph,
-					 extents,
-					 !klass->user_data ? nullptr : klass->user_data->glyph_extents);
-    }
+      return get_glyph_extents_unsynthesized (glyph, extents, budget);
     if (!is_synthetic &&
-	klass->get.f.glyph_extents (this, user_data,
-				    glyph,
-				    extents,
-				    !klass->user_data ? nullptr : klass->user_data->glyph_extents))
+	get_glyph_extents_unsynthesized (glyph, extents, budget))
       return true;
 
     /* Try getting extents from paint(), then draw(), *then* get_extents()
@@ -610,9 +640,12 @@ struct hb_font_t
 
 #ifndef HB_NO_PAINT
     hb_paint_extents_context_t paint_extents;
-    if (paint_glyph_or_fail (glyph,
-			     hb_paint_extents_get_funcs (), &paint_extents,
-			     0, 0))
+    if (budget) paint_extents.budget_remaining = *budget;
+    bool painted = paint_glyph_or_fail (glyph,
+					hb_paint_extents_get_funcs (), &paint_extents,
+					0, 0);
+    if (budget) *budget = paint_extents.budget_remaining;
+    if (painted)
     {
       *extents = paint_extents.get_extents ().to_glyph_extents ();
       return true;
@@ -620,19 +653,16 @@ struct hb_font_t
 #endif
 
 #ifndef HB_NO_DRAW
-    hb_extents_t<> draw_extents;
+    hb_draw_extents_t draw_extents {{}, budget};
     if (draw_glyph_or_fail (glyph,
 			    hb_draw_extents_get_funcs (), &draw_extents))
     {
-      *extents = draw_extents.to_glyph_extents ();
+      *extents = draw_extents.extents.to_glyph_extents ();
       return true;
     }
 #endif
 
-    bool ret = klass->get.f.glyph_extents (this, user_data,
-					   glyph,
-					   extents,
-					   !klass->user_data ? nullptr : klass->user_data->glyph_extents);
+    bool ret = get_glyph_extents_unsynthesized (glyph, extents, budget);
     if (ret)
       synthetic_glyph_extents (extents);
 
@@ -874,6 +904,8 @@ struct hb_font_t
 
     unsigned int offset = 0;
     unsigned int count = buf->len;
+    /* Vertical origins may come from glyph extents. */
+    int64_t budget = hb_budget_for_extents (count);
     while (offset < count)
     {
       unsigned n = hb_min (count - offset, ARRAY_LENGTH (origins));
@@ -885,7 +917,8 @@ struct hb_font_t
         if (get_glyph_v_origins (n,
 				  &buf->info[offset].codepoint, sizeof (hb_glyph_info_t),
 				  &origins[0].x, sizeof (origins[0]),
-				  &origins[0].y, sizeof (origins[0])))
+				  &origins[0].y, sizeof (origins[0]),
+				  true, &budget))
 	{
 	  if (!has_ascender)
 	  {
@@ -938,13 +971,16 @@ struct hb_font_t
 
     unsigned int offset = 0;
     unsigned int count = buf->len;
+    /* Vertical origins may come from glyph extents. */
+    int64_t budget = hb_budget_for_extents (count);
     while (offset < count)
     {
       unsigned n = hb_min (count - offset, ARRAY_LENGTH (origins));
       if (!get_glyph_v_origins (n,
 				&buf->info[offset].codepoint, sizeof (hb_glyph_info_t),
 				&origins[0].x, sizeof (origins[0]),
-				&origins[0].y, sizeof (origins[0])))
+				&origins[0].y, sizeof (origins[0]),
+				true, &budget))
       {
 	if (get_glyph_h_origins (n,
 				 &buf->info[offset].codepoint, sizeof (hb_glyph_info_t),
@@ -1171,6 +1207,28 @@ struct hb_font_t
   { return (float) v * mult; }
 };
 DECLARE_NULL_INSTANCE (hb_font_t);
+
+#ifndef HB_NO_OT_FONT
+HB_INTERNAL bool
+_hb_ot_font_get_glyph_extents (hb_font_t          *font,
+			       hb_codepoint_t      glyph,
+			       hb_glyph_extents_t *extents,
+			       int64_t            *budget,
+			       hb_bool_t          *ret);
+#ifndef HB_NO_VERTICAL
+HB_INTERNAL bool
+_hb_ot_font_get_glyph_v_origins (hb_font_t            *font,
+				 unsigned int          count,
+				 const hb_codepoint_t *first_glyph,
+				 unsigned int          glyph_stride,
+				 hb_position_t        *first_x,
+				 unsigned int          x_stride,
+				 hb_position_t        *first_y,
+				 unsigned int          y_stride,
+				 int64_t              *budget,
+				 hb_bool_t            *ret);
+#endif
+#endif
 
 
 #endif /* HB_FONT_HH */

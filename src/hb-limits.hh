@@ -205,6 +205,21 @@ hb_budget_spend (int64_t &budget, unsigned int cost, unsigned int mult = 1)
   return budget >= 0;
 }
 
+/* Fetching the extents of many glyphs in one go, as the shaper does to
+ * place marks without GPOS, or to centre glyphs on their extents for
+ * vertical text.  Each fetch can load a whole outline, so the loop is a
+ * driving session: it gets one glyph budget, plus this much per glyph so
+ * that long runs of ordinary glyphs never run out. */
+#ifndef HB_BUDGET_EXTENTS_PER_GLYPH
+#define HB_BUDGET_EXTENTS_PER_GLYPH 4096
+#endif
+
+static inline int64_t
+hb_budget_for_extents (unsigned int num_glyphs)
+{
+  return HB_BUDGET_GLYPH + (int64_t) num_glyphs * HB_BUDGET_EXTENTS_PER_GLYPH;
+}
+
 /* The flat pixel-work floor for one raster paint session.  Pixel and
  * outline work use separate live counters, so keep this independent of
  * the common outline budget above. */

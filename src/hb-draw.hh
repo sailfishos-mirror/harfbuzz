@@ -27,6 +27,8 @@
 
 #include "hb.hh"
 
+#include "hb-geometry.hh"
+
 
 /*
  * hb_draw_funcs_t
@@ -250,6 +252,14 @@ struct hb_draw_session_t
   int64_t *budget;
 };
 
+
+/* Draw data for hb_draw_extents_get_funcs(). */
+struct hb_draw_extents_t
+{
+  hb_extents_t<> extents;
+  /* The caller's live work budget, if it has one. */
+  int64_t *budget_remaining;
+};
 
 HB_INTERNAL hb_draw_funcs_t *
 hb_draw_extents_get_funcs ();

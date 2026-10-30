@@ -476,6 +476,53 @@ hb_font_get_glyph_v_origins_default (hb_font_t *font HB_UNUSED,
   return ret;
 }
 
+/* See get_glyph_extents_with_budget(). */
+hb_bool_t
+hb_font_t::get_glyph_v_origins_with_budget (unsigned int          count,
+					    const hb_codepoint_t *first_glyph,
+					    unsigned int          glyph_stride,
+					    hb_position_t        *first_x,
+					    unsigned int          x_stride,
+					    hb_position_t        *first_y,
+					    unsigned int          y_stride,
+					    int64_t              *budget)
+{
+  hb_bool_t ret;
+  if (klass->get.f.glyph_v_origins == hb_font_get_glyph_v_origins_default &&
+      !has_glyph_v_origin_func_set ())
+  {
+    ret = parent->get_glyph_v_origins (count,
+				       first_glyph, glyph_stride,
+				       first_x, x_stride,
+				       first_y, y_stride,
+				       true, budget);
+    if (ret)
+    {
+      for (unsigned i = 0; i < count; i++)
+      {
+	parent_scale_position (first_x, first_y);
+	first_x = &StructAtOffsetUnaligned<hb_position_t> (first_x, x_stride);
+	first_y = &StructAtOffsetUnaligned<hb_position_t> (first_y, y_stride);
+      }
+    }
+    return ret;
+  }
+#if !defined(HB_NO_OT_FONT) && !defined(HB_NO_VERTICAL)
+  if (_hb_ot_font_get_glyph_v_origins (this,
+				       count,
+				       first_glyph, glyph_stride,
+				       first_x, x_stride,
+				       first_y, y_stride,
+				       budget, &ret))
+    return ret;
+#endif
+  return klass->get.f.glyph_v_origins (this, user_data,
+				       count,
+				       first_glyph, glyph_stride,
+				       first_x, x_stride, first_y, y_stride,
+				       !klass->user_data ? nullptr : klass->user_data->glyph_v_origins);
+}
+
 static hb_position_t
 hb_font_get_glyph_h_kerning_nil (hb_font_t      *font HB_UNUSED,
 				 void           *font_data HB_UNUSED,
@@ -542,6 +589,33 @@ hb_font_get_glyph_extents_default (hb_font_t          *font,
     font->parent_scale_distance (&extents->width, &extents->height);
   }
   return ret;
+}
+
+/* The glyph_extents callback has no way to carry the caller's work budget.
+ * Go around the callback if it is one of ours. */
+hb_bool_t
+hb_font_t::get_glyph_extents_with_budget (hb_codepoint_t      glyph,
+					  hb_glyph_extents_t *extents,
+					  int64_t            *budget)
+{
+  hb_bool_t ret;
+  if (klass->get.f.glyph_extents == hb_font_get_glyph_extents_default)
+  {
+    ret = parent->get_glyph_extents (glyph, extents, false, budget);
+    if (ret) {
+      parent_scale_position (&extents->x_bearing, &extents->y_bearing);
+      parent_scale_distance (&extents->width, &extents->height);
+    }
+    return ret;
+  }
+#ifndef HB_NO_OT_FONT
+  if (_hb_ot_font_get_glyph_extents (this, glyph, extents, budget, &ret))
+    return ret;
+#endif
+  return klass->get.f.glyph_extents (this, user_data,
+				     glyph,
+				     extents,
+				     !klass->user_data ? nullptr : klass->user_data->glyph_extents);
 }
 
 static hb_bool_t

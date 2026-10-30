@@ -2555,13 +2555,14 @@ struct COLR
     bool
     get_extents (hb_font_t *font,
 		 hb_codepoint_t glyph,
-		 hb_glyph_extents_t *extents) const
+		 hb_glyph_extents_t *extents,
+		 int64_t *budget = nullptr) const
     {
       if (unlikely (!has_data ())) return false;
 
       hb_colr_scratch_t *scratch = acquire_scratch ();
       if (unlikely (!scratch)) return true;
-      bool ret = colr->get_extents (font, glyph, extents, *scratch);
+      bool ret = colr->get_extents (font, glyph, extents, *scratch, budget);
       release_scratch (scratch);
       return ret;
     }
@@ -3062,7 +3063,8 @@ struct COLR
   get_extents (hb_font_t *font,
 	       hb_codepoint_t glyph,
 	       hb_glyph_extents_t *extents,
-	       hb_colr_scratch_t &scratch) const
+	       hb_colr_scratch_t &scratch,
+	       int64_t *budget = nullptr) const
   {
 
     ItemVarStoreInstancer instancer (get_var_store_ptr (),
@@ -3077,7 +3079,11 @@ struct COLR
 
     auto *extents_funcs = hb_paint_extents_get_funcs ();
     scratch.paint_extents.clear ();
+    /* Share the caller's session budget so repeated glyph walks draw on
+     * one ceiling instead of re-arming per call. */
+    if (budget) scratch.paint_extents.budget_remaining = *budget;
     bool ret = paint_glyph (font, glyph, extents_funcs, &scratch.paint_extents, 0, HB_COLOR(0,0,0,0), true, scratch);
+    if (budget) *budget = scratch.paint_extents.budget_remaining;
 
     auto e = scratch.paint_extents.get_extents ();
     if (e.is_void ())

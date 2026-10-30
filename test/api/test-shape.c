@@ -206,6 +206,106 @@ test_shape_overlong_mark_cluster (void)
   hb_face_destroy (face);
 }
 
+static void
+test_shape_fallback_mark_budget (void)
+{
+  /* A variable font without GPOS.  Its mark glyph has 65536 points and 250
+   * gvar tuples, which nearly uses up the work budget of one glyph.  Fallback
+   * mark positioning fetches the extents of every mark in the buffer; those
+   * must share a budget instead of starting a new one each. */
+  static const char cmap[] =
+    "\0\0\0\1\0\3\0\12\0\0\0\14"
+    "\0\14\0\0\0\0\0\50\0\0\0\0\0\0\0\2"
+    "\0\0\0\141\0\0\0\141\0\0\0\1" /* 'a' */
+    "\0\0\3\1\0\0\3\1\0\0\0\2"; /* U+0301 */
+  static const char fvar[] =
+    "\0\1\0\0\0\20\0\2\0\1\0\24\0\0\0\10"
+    "wght\0\144\0\0\1\220\0\0\3\204\0\0\0\0\1\0";
+  static const char loca[] = "\0\0\0\0\0\14\1\23";
+  static const char hmtx[] = "\1\364\0\0\0\0\0\0";
+  char head[54] = {0}, hhea[36] = {0}, maxp[32] = {0};
+  char glyf[24 + 526] = {0};
+  char gvar[38 + 2008] = {0};
+
+  head[1] = 1;
+  memcpy (head + 12, "\x5F\x0F\x3C\xF5", 4);
+  head[18] = 0x03; head[19] = (char) 0xE8; /* unitsPerEm */
+  hhea[1] = 1;
+  hhea[4] = 0x03; hhea[5] = 0x20; /* ascender */
+  hhea[35] = 1; /* numberOfHMetrics */
+  maxp[1] = 1;
+  maxp[5] = 3; /* numGlyphs */
+
+  /* 'a': a triangle. */
+  memcpy (glyf, "\0\1\0\0\0\0\0\144\0\144\0\2\0\0\67\67\67\0\144\0\0\0\144", 23);
+  /* U+0301: one contour; repeated flags, no coordinate bytes. */
+  glyf[24 + 1] = 1;
+  glyf[24 + 10] = glyf[24 + 11] = (char) 0xFF;
+  for (unsigned i = 0; i < 256; i++)
+  {
+    glyf[24 + 14 + 2 * i] = 0x39;
+    glyf[24 + 14 + 2 * i + 1] = (char) 0xFF;
+  }
+
+  memcpy (gvar, "\0\1\0\0\0\1\0\1\0\0\0\44\0\3\0\1\0\0\0\46", 20);
+  gvar[20 + 14] = 0x07; gvar[20 + 15] = (char) 0xD8; /* End of glyph 2. */
+  gvar[36] = 0x40; /* Shared tuple. */
+  memcpy (gvar + 38, "\x80\xFA\x03\xEC", 4);
+  for (unsigned i = 0; i < 250; i++)
+  {
+    gvar[38 + 4 + 4 * i + 1] = 4;
+    gvar[38 + 1004 + 3 + 4 * i + 1] = gvar[38 + 1004 + 3 + 4 * i + 3] = 5;
+  }
+  gvar[38 + 1004] = 1; /* Shared point numbers: point 0. */
+
+  hb_face_t *face = hb_face_builder_create ();
+  hb_blob_t *blob;
+#define ADD_TABLE(table, size) \
+  blob = hb_blob_create (table, size, HB_MEMORY_MODE_READONLY, NULL, NULL); \
+  hb_face_builder_add_table (face, HB_TAG_CHAR4 (#table), blob); \
+  hb_blob_destroy (blob)
+  ADD_TABLE (cmap, sizeof (cmap) - 1);
+  ADD_TABLE (fvar, sizeof (fvar) - 1);
+  ADD_TABLE (loca, sizeof (loca) - 1);
+  ADD_TABLE (hmtx, sizeof (hmtx) - 1);
+  ADD_TABLE (head, sizeof (head));
+  ADD_TABLE (hhea, sizeof (hhea));
+  ADD_TABLE (maxp, sizeof (maxp));
+  ADD_TABLE (glyf, sizeof (glyf));
+  ADD_TABLE (gvar, sizeof (gvar));
+#undef ADD_TABLE
+
+  hb_font_t *font = hb_font_create (face);
+  hb_variation_t variation = {HB_TAG ('w','g','h','t'), 900.f};
+  hb_font_set_variations (font, &variation, 1);
+
+  hb_glyph_extents_t extents;
+  g_assert_true (hb_font_get_glyph_extents (font, 2, &extents));
+
+  hb_buffer_t *buffer = hb_buffer_create ();
+  hb_buffer_add (buffer, 'a', 0);
+  for (unsigned i = 0; i < 100; i++)
+    hb_buffer_add (buffer, 0x0301, i + 1);
+  hb_buffer_set_content_type (buffer, HB_BUFFER_CONTENT_TYPE_UNICODE);
+  hb_buffer_guess_segment_properties (buffer);
+
+  /* Force the OT shaper: this asserts C-core budget behaviour that other
+   * shapers (e.g. harfrust) do not exercise. */
+  const char *shaper_list[] = {"ot", NULL};
+  hb_shape_full (font, buffer, NULL, 0, shaper_list);
+
+  unsigned len;
+  hb_glyph_position_t *positions = hb_buffer_get_glyph_positions (buffer, &len);
+  g_assert_cmpuint (len, ==, 101);
+  g_assert_cmpint (positions[1].y_offset, >, 0);
+  /* Out of budget: left where it was. */
+  g_assert_cmpint (positions[100].y_offset, ==, 0);
+
+  hb_buffer_destroy (buffer);
+  hb_font_destroy (font);
+  hb_face_destroy (face);
+}
+
 
 static void
 test_shape_list (void)
@@ -228,6 +328,7 @@ main (int argc, char **argv)
   hb_test_add (test_shape);
   hb_test_add (test_shape_clusters);
   hb_test_add (test_shape_overlong_mark_cluster);
+  hb_test_add (test_shape_fallback_mark_budget);
   /* TODO test fallback shaper */
   /* TODO test shaper_full */
   hb_test_add (test_shape_list);

@@ -213,10 +213,11 @@ position_mark (const hb_ot_shape_plan_t *plan HB_UNUSED,
 	       hb_buffer_t  *buffer,
 	       hb_glyph_extents_t &base_extents,
 	       unsigned int i,
-	       unsigned int combining_class)
+	       unsigned int combining_class,
+	       int64_t *budget)
 {
   hb_glyph_extents_t mark_extents;
-  if (!font->get_glyph_extents (buffer->info[i].codepoint, &mark_extents))
+  if (!font->get_glyph_extents (buffer->info[i].codepoint, &mark_extents, true, budget))
     return;
 
   hb_position_t y_gap = font->y_scale / 16;
@@ -327,7 +328,8 @@ position_around_base (const hb_ot_shape_plan_t *plan,
 		      hb_buffer_t  *buffer,
 		      unsigned int base,
 		      unsigned int end,
-		      bool adjust_offsets_when_zeroing)
+		      bool adjust_offsets_when_zeroing,
+		      int64_t *budget)
 {
   hb_direction_t horiz_dir = HB_DIRECTION_INVALID;
 
@@ -335,7 +337,7 @@ position_around_base (const hb_ot_shape_plan_t *plan,
 
   hb_glyph_extents_t base_extents;
   if (!font->get_glyph_extents (buffer->info[base].codepoint,
-				&base_extents))
+				&base_extents, true, budget))
   {
     /* If extents don't work, zero marks and go home. */
     zero_mark_advances (buffer, base + 1, end, adjust_offsets_when_zeroing);
@@ -404,7 +406,7 @@ position_around_base (const hb_ot_shape_plan_t *plan,
 	cluster_extents = component_extents;
       }
 
-      position_mark (plan, font, buffer, cluster_extents, i, this_combining_class);
+      position_mark (plan, font, buffer, cluster_extents, i, this_combining_class, budget);
 
       buffer->pos[i].x_advance = 0;
       buffer->pos[i].y_advance = 0;
@@ -428,7 +430,8 @@ position_cluster_impl (const hb_ot_shape_plan_t *plan,
 		       hb_buffer_t  *buffer,
 		       unsigned int start,
 		       unsigned int end,
-		       bool adjust_offsets_when_zeroing)
+		       bool adjust_offsets_when_zeroing,
+		       int64_t *budget)
 {
   /* Find the base glyph */
   hb_glyph_info_t *info = buffer->info;
@@ -446,7 +449,7 @@ position_cluster_impl (const hb_ot_shape_plan_t *plan,
 	  break;
       }
 
-      position_around_base (plan, font, buffer, i, j, adjust_offsets_when_zeroing);
+      position_around_base (plan, font, buffer, i, j, adjust_offsets_when_zeroing, budget);
 
       i = j - 1;
     }
@@ -458,12 +461,13 @@ position_cluster (const hb_ot_shape_plan_t *plan,
 		  hb_buffer_t  *buffer,
 		  unsigned int start,
 		  unsigned int end,
-		  bool adjust_offsets_when_zeroing)
+		  bool adjust_offsets_when_zeroing,
+		  int64_t *budget)
 {
   if (end - start < 2)
     return;
 
-  position_cluster_impl (plan, font, buffer, start, end, adjust_offsets_when_zeroing);
+  position_cluster_impl (plan, font, buffer, start, end, adjust_offsets_when_zeroing, budget);
 }
 
 void
@@ -484,14 +488,16 @@ _hb_ot_shape_fallback_mark_position (const hb_ot_shape_plan_t *plan,
   unsigned int start = 0;
   unsigned int count = buffer->len;
   hb_glyph_info_t *info = buffer->info;
+  /* Shared by all the glyph extents we fetch. */
+  int64_t budget = hb_budget_for_extents (count);
   for (unsigned int i = 1; i < count; i++)
     if (likely (!_hb_glyph_info_is_unicode_mark (&info[i]) &&
 		!_hb_glyph_info_is_hidden (&info[i]) &&
 		!_hb_glyph_info_is_default_ignorable (&info[i]))) {
-      position_cluster (plan, font, buffer, start, i, adjust_offsets_when_zeroing);
+      position_cluster (plan, font, buffer, start, i, adjust_offsets_when_zeroing, &budget);
       start = i;
     }
-  position_cluster (plan, font, buffer, start, count, adjust_offsets_when_zeroing);
+  position_cluster (plan, font, buffer, start, count, adjust_offsets_when_zeroing, &budget);
 
   (void) buffer->message (font, "end fallback mark");
 }

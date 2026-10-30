@@ -630,16 +630,16 @@ hb_ot_get_glyph_v_advances (hb_font_t* font, void* font_data,
 #ifndef HB_NO_VERTICAL
 HB_HOT
 static hb_bool_t
-hb_ot_get_glyph_v_origins (hb_font_t *font,
-			   void *font_data,
-			   unsigned int count,
-			   const hb_codepoint_t *first_glyph,
-			   unsigned glyph_stride,
-			   hb_position_t *first_x,
-			   unsigned x_stride,
-			   hb_position_t *first_y,
-			   unsigned y_stride,
-			   void *user_data HB_UNUSED)
+hb_ot_get_glyph_v_origins_with_budget (hb_font_t *font,
+				       void *font_data,
+				       unsigned int count,
+				       const hb_codepoint_t *first_glyph,
+				       unsigned glyph_stride,
+				       hb_position_t *first_x,
+				       unsigned x_stride,
+				       hb_position_t *first_y,
+				       unsigned y_stride,
+				       int64_t *budget)
 {
   const hb_ot_font_t *ot_font = (const hb_ot_font_t *) font_data;
   const hb_ot_face_t *ot_face = ot_font->ot_face;
@@ -775,6 +775,8 @@ hb_ot_get_glyph_v_origins (hb_font_t *font,
     hb_font_extents_t font_extents;
     font->get_h_extents_with_fallback (&font_extents);
     hb_position_t font_advance = font_extents.ascender - font_extents.descender;
+    int64_t stack_budget = hb_budget_for_extents (count);
+    if (!budget) budget = &stack_budget;
 
     for (unsigned i = 0; i < count; i++)
     {
@@ -786,13 +788,15 @@ hb_ot_get_glyph_v_origins (hb_font_t *font,
       else
       {
 	hb_glyph_extents_t extents = {0};
-	if (likely (font->get_glyph_extents (*first_glyph, &extents)))
+	if (likely (font->get_glyph_extents (*first_glyph, &extents, true, budget)))
 	  origin = hb_clamp_to<hb_position_t> ((int64_t) extents.y_bearing +
 					 (((int64_t) font_advance + extents.height) >> 1));
 	else
 	  origin = font_extents.ascender;
 
-	origin_cache->set (*first_glyph, font->y_scale < 0 ? -origin : origin);
+	/* Running out of budget says nothing about this glyph. */
+	if (likely (*budget >= 0))
+	  origin_cache->set (*first_glyph, font->y_scale < 0 ? -origin : origin);
       }
 
       *first_y = origin;
@@ -805,14 +809,58 @@ hb_ot_get_glyph_v_origins (hb_font_t *font,
   ot_font->v_origin.release_origin_cache (origin_cache);
   return true;
 }
+
+static hb_bool_t
+hb_ot_get_glyph_v_origins (hb_font_t *font,
+			   void *font_data,
+			   unsigned int count,
+			   const hb_codepoint_t *first_glyph,
+			   unsigned glyph_stride,
+			   hb_position_t *first_x,
+			   unsigned x_stride,
+			   hb_position_t *first_y,
+			   unsigned y_stride,
+			   void *user_data HB_UNUSED)
+{
+  return hb_ot_get_glyph_v_origins_with_budget (font, font_data,
+						count,
+						first_glyph, glyph_stride,
+						first_x, x_stride,
+						first_y, y_stride,
+						nullptr);
+}
+
+/* Returns false if font does not use our functions. */
+bool
+_hb_ot_font_get_glyph_v_origins (hb_font_t            *font,
+				 unsigned int          count,
+				 const hb_codepoint_t *first_glyph,
+				 unsigned int          glyph_stride,
+				 hb_position_t        *first_x,
+				 unsigned int          x_stride,
+				 hb_position_t        *first_y,
+				 unsigned int          y_stride,
+				 int64_t              *budget,
+				 hb_bool_t            *ret)
+{
+  if (font->klass->get.f.glyph_v_origins != hb_ot_get_glyph_v_origins)
+    return false;
+  *ret = hb_ot_get_glyph_v_origins_with_budget (font, font->user_data,
+						count,
+						first_glyph, glyph_stride,
+						first_x, x_stride,
+						first_y, y_stride,
+						budget);
+  return true;
+}
 #endif
 
 static hb_bool_t
-hb_ot_get_glyph_extents (hb_font_t *font,
-			 void *font_data,
-			 hb_codepoint_t glyph,
-			 hb_glyph_extents_t *extents,
-			 void *user_data HB_UNUSED)
+hb_ot_get_glyph_extents_with_budget (hb_font_t *font,
+				     void *font_data,
+				     hb_codepoint_t glyph,
+				     hb_glyph_extents_t *extents,
+				     int64_t *budget)
 {
   const hb_ot_font_t *ot_font = (const hb_ot_font_t *) font_data;
   const hb_ot_face_t *ot_face = ot_font->ot_face;
@@ -822,18 +870,42 @@ hb_ot_get_glyph_extents (hb_font_t *font,
   if (ot_face->CBDT->get_extents (font, glyph, extents)) return true;
 #endif
 #if !defined(HB_NO_COLOR) && !defined(HB_NO_PAINT)
-  if (ot_face->COLR->get_extents (font, glyph, extents)) return true;
+  if (ot_face->COLR->get_extents (font, glyph, extents, budget)) return true;
 #endif
 #ifndef HB_NO_VAR_COMPOSITES
-  if (ot_face->VARC->get_extents (font, glyph, extents)) return true;
+  if (ot_face->VARC->get_extents (font, glyph, extents, budget)) return true;
 #endif
-  if (ot_face->glyf->get_extents (font, glyph, extents)) return true;
+  if (ot_face->glyf->get_extents (font, glyph, extents, budget)) return true;
 #ifndef HB_NO_OT_FONT_CFF
-  if (ot_face->cff2->get_extents (font, glyph, extents)) return true;
-  if (ot_face->cff1->get_extents (font, glyph, extents)) return true;
+  if (ot_face->cff2->get_extents (font, glyph, extents, budget)) return true;
+  if (ot_face->cff1->get_extents (font, glyph, extents, budget)) return true;
 #endif
 
   return false;
+}
+
+static hb_bool_t
+hb_ot_get_glyph_extents (hb_font_t *font,
+			 void *font_data,
+			 hb_codepoint_t glyph,
+			 hb_glyph_extents_t *extents,
+			 void *user_data HB_UNUSED)
+{
+  return hb_ot_get_glyph_extents_with_budget (font, font_data, glyph, extents, nullptr);
+}
+
+/* Returns false if font does not use our functions. */
+bool
+_hb_ot_font_get_glyph_extents (hb_font_t          *font,
+			       hb_codepoint_t      glyph,
+			       hb_glyph_extents_t *extents,
+			       int64_t            *budget,
+			       hb_bool_t          *ret)
+{
+  if (font->klass->get.f.glyph_extents != hb_ot_get_glyph_extents)
+    return false;
+  *ret = hb_ot_get_glyph_extents_with_budget (font, font->user_data, glyph, extents, budget);
+  return true;
 }
 
 #ifndef HB_NO_OT_FONT_GLYPH_NAMES

@@ -172,16 +172,18 @@ struct VARC
   get_extents (hb_font_t *font,
 	       hb_codepoint_t gid,
 	       hb_extents_t<> *extents,
-	       hb_varc_scratch_t &scratch) const
+	       hb_varc_scratch_t &scratch,
+	       int64_t *budget = nullptr) const
   {
-    int64_t budget = HB_BUDGET_GLYPH;
+    int64_t stack_budget = HB_BUDGET_GLYPH;
+    if (!budget) budget = &stack_budget;
     hb_varc_context_t c {font,
 			 nullptr,
 			 extents,
 			 hb_decycler_t {},
 			 HB_MAX_GRAPH_EDGE_COUNT,
 			 HB_MAX_NESTING_LEVEL,
-			 budget,
+			 *budget,
 			 scratch};
 
     return get_path_at (c, gid,
@@ -251,7 +253,8 @@ struct VARC
     bool
     get_extents (hb_font_t *font,
 		 hb_codepoint_t gid,
-		 hb_glyph_extents_t *extents) const
+		 hb_glyph_extents_t *extents,
+		 int64_t *budget = nullptr) const
     {
 #ifndef HB_NO_DRAW
       if (!table->has_data ()) return false;
@@ -260,7 +263,7 @@ struct VARC
 
       auto *scratch = acquire_scratch ();
       if (unlikely (!scratch)) return true;
-      bool ret = table->get_extents (font, gid, &f_extents, *scratch);
+      bool ret = table->get_extents (font, gid, &f_extents, *scratch, budget);
       release_scratch (scratch);
 
       if (ret)

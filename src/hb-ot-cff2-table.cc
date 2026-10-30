@@ -105,9 +105,10 @@ struct cff2_cs_opset_extents_t : cff2_cs_opset_t<cff2_cs_opset_extents_t, cff2_e
 
 bool OT::cff2::accelerator_t::get_extents (hb_font_t *font,
 					   hb_codepoint_t glyph,
-					   hb_glyph_extents_t *extents) const
+					   hb_glyph_extents_t *extents,
+					   int64_t *budget) const
 {
-  return get_extents_at (font, glyph, extents, hb_array (font->coords, font->num_coords));
+  return get_extents_at (font, glyph, extents, hb_array (font->coords, font->num_coords), budget);
 }
 
 bool OT::cff2::accelerator_t::get_extents_at (hb_font_t *font,
